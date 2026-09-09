@@ -126,7 +126,7 @@ def _success(ingested: dict, results: list[dict[str, Any]]) -> dict:
 
 
 def format_result(r: dict) -> str:
-    param = r.get("parameter")
+    param = r.get("parameter") or r.get("outcome")
     title = f"{param}\n" if param else ""
     test = r.get("test")
     if test in ("student-t", "welch-t"):
@@ -819,7 +819,21 @@ def _requested_mode(text: str, request: dict) -> str | None:
 
 
 def _requested_outcome(request: dict) -> str | None:
-    requested = request.get("outcome") or request.get("outcome_name")
+    requested = (
+        request.get("outcome")
+        or request.get("outcome_name")
+        or request.get("dependent_variable")
+        or request.get("dependentVariable")
+        or request.get("response")
+        or request.get("metric")
+    )
+    if requested is None:
+        text = str(request.get("text") or "")
+        match = re.search(
+            r"(?im)^\s*(?:outcome|dependent\s+variable|dependent_variable|response|measure|metric)\s*:\s*(.+?)\s*$",
+            text,
+        )
+        requested = match.group(1) if match else None
     if requested is None:
         return None
     return str(requested).strip() or None

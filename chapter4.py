@@ -425,10 +425,40 @@ def _working_notes(result: dict[str, Any]) -> list[str]:
         ]
     if test == "one-way anova":
         group_text = "; ".join(f"{g['name']}: n={g['n']}, mean={g['mean']:.3f}, SD={g['sd']:.3f}" for g in result.get("groups", []))
-        return [
+        notes = [
             f"Formula: one-way ANOVA; {group_text}.",
             f"F={result['F']:.12g}, df={result['dfb']}, {result['dfw']}, exact p={_fmt_p(result['p'])}.",
         ]
+        effect_size = result.get("effectSize", {})
+        if effect_size:
+            notes.append(
+                f"Effect size: eta-squared={effect_size.get('etaSquared', 0.0):.12g}, "
+                f"omega-squared={effect_size.get('omegaSquared', 0.0):.12g}."
+            )
+        assumptions = result.get("assumptions", {})
+        shapiro = "; ".join(
+            f"{item['group']}: p={_fmt_p(item['p'])}"
+            for item in assumptions.get("shapiroWilk", [])
+            if item.get("p") is not None
+        )
+        if shapiro:
+            notes.append(f"Shapiro-Wilk normality checks: {shapiro}.")
+        levene = assumptions.get("levene", {})
+        if levene.get("p") is not None:
+            notes.append(
+                f"Levene variance homogeneity check: W={levene['W']:.12g}, "
+                f"p={_fmt_p(levene['p'])}."
+            )
+        post_hoc = result.get("postHoc")
+        if post_hoc:
+            comparisons = "; ".join(
+                f"{item['group1']} vs {item['group2']}: p_adj={_fmt_p(item['pAdjusted'])}"
+                f"{' (significant)' if item['reject'] else ''}"
+                for item in post_hoc.get("comparisons", [])
+            )
+            if comparisons:
+                notes.append(f"Tukey HSD post-hoc pairwise comparisons: {comparisons}.")
+        return notes
     if test == "two-way anova":
         return [
             f"Formula: two-way ANOVA with {result['factorA']} × {result['factorB']}; n={result['n']}.",
@@ -670,17 +700,33 @@ def _discussion_limits(results: list[dict[str, Any]]) -> str:
     if any(result.get("test") in {"one-way anova", "two-way anova"} for result in results):
         clauses.append("ANOVA does not establish that every pair of groups differs")
     clauses.append("No causation is established")
-    if _has_moisture_outcome(results):
-        clauses.append(
-            "Higher or lower values, including a lower moisture or water-content value "
-            "(drier), do not mean safer, approved, or better for market"
-        )
-    else:
-        labels = _join_items([_outcome_name(result) for result in results])
-        clauses.append(
-            f"Higher or lower values on {labels} do not mean safer, approved, or better for market"
-        )
+    clauses.append(_discussion_outcome_limit(results))
     return "Limits: " + ". ".join(clauses) + "."
+
+
+def _discussion_outcome_limit(results: list[dict[str, Any]]) -> str:
+    labels = [_outcome_name(result) for result in results]
+    label_text = _join_items(labels)
+    lower_labels = " ".join(labels).lower()
+    if re.search(r"\bdwell\b|\btime\b|\bduration\b|\bseconds?\b|\bminutes?\b", lower_labels):
+        return (
+            f"Higher or lower values on {label_text} describe a longer or shorter duration only; "
+            "conclusions about process performance, quality, or safety require additional domain evidence"
+        )
+    if re.search(r"\bph\b", lower_labels):
+        return (
+            f"Higher or lower values on {label_text} describe acidity only; "
+            "quality or safety conclusions require additional domain evidence"
+        )
+    if re.search(r"\bmoisture\b|\bwater(?:\s+content)?\b|water_content", lower_labels):
+        return (
+            f"Higher or lower values on {label_text} describe moisture only; "
+            "quality or safety conclusions require additional domain evidence"
+        )
+    return (
+        f"Higher or lower values on {label_text} describe the measured response only; "
+        "practical conclusions require additional domain evidence"
+    )
 
 
 def _has_sample_size(results: list[dict[str, Any]]) -> bool:
@@ -767,8 +813,8 @@ def _join_items(items: list[str]) -> str:
 
 
 def _outcome_name(result: dict[str, Any]) -> str:
-    if result.get("parameter") or result.get("outcome"):
-        return str(result.get("parameter") or result.get("outcome"))
+    if result.get("parameter") or result.get("outcome") or result.get("outcomeName"):
+        return str(result.get("parameter") or result.get("outcome") or result.get("outcomeName"))
     if result.get("test") == "paired-t":
         return f"{result.get('before', {}).get('name', 'before')} vs {result.get('after', {}).get('name', 'after')}"
     if result.get("test") in {"fisher-exact", "chi-square"}:

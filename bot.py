@@ -195,6 +195,10 @@ def _is_small_talk(text: str) -> bool:
 
 def _analysis_request(text: str) -> tuple[dict[str, Any], dict[str, Any]]:
     topic_match = re.search(r"(?im)^\s*topic\s*:\s*(.+?)\s*$", text or "")
+    outcome_match = re.search(
+        r"(?im)^\s*(?:outcome|dependent\s+variable|dependent_variable|response|measure|metric)\s*:\s*(.+?)\s*$",
+        text or "",
+    )
     hypothesis_matches = re.finditer(
         r"(?im)^\s*(h(?:0|o)\d*)\s*:\s*(.+?)\s*$",
         text or "",
@@ -205,7 +209,7 @@ def _analysis_request(text: str) -> tuple[dict[str, Any], dict[str, Any]]:
     ]
     data_lines = []
     for line in (text or "").splitlines():
-        if re.match(r"(?i)^\s*(topic|h(?:0|o)\d*)\s*:", line):
+        if re.match(r"(?i)^\s*(topic|outcome|dependent\s+variable|dependent_variable|response|measure|metric|h(?:0|o)\d*)\s*:", line):
             continue
         data_lines.append(line)
     metadata: dict[str, Any] = {
@@ -213,7 +217,10 @@ def _analysis_request(text: str) -> tuple[dict[str, Any], dict[str, Any]]:
         "hypotheses": hypotheses,
         "discuss": bool(re.search(r"\bdiscuss\b", text or "", flags=re.I)),
     }
-    return {"text": "\n".join(data_lines).strip()}, metadata
+    request = {"text": "\n".join(data_lines).strip()}
+    if outcome_match:
+        request["outcome"] = outcome_match.group(1).strip()
+    return request, metadata
 
 
 def _run_analysis(text: str) -> dict[str, Any]:
