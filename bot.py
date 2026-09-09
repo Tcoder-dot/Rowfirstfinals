@@ -60,6 +60,14 @@ GEMINI_SUFFIXES = {".pdf", ".docx", ".doc"}
 GEMINI_FALLBACK = (
     "Add GEMINI_API_KEY in Secrets to read PDF/Word. You can still paste the table or send CSV."
 )
+GEMINI_MODEL = "gemini-3.6-flash"
+GEMINI_UNAVAILABLE = (
+    "Gemini could not read this file because the configured model is unavailable. "
+    "Please try again later or paste the table/send CSV."
+)
+GEMINI_FAILED = (
+    "Gemini could not read this file right now. Please try again or paste the table/send CSV."
+)
 MIME_SUFFIXES = {
     "text/csv": ".csv",
     "application/csv": ".csv",
@@ -97,6 +105,8 @@ def _gemini_extract(path: Path) -> dict[str, Any]:
     try:
         import google.generativeai as genai
 
+        # gemini-2.0-flash is no longer available for this API key. Keep the
+        # model explicit so a retired model does not look like a missing key.
         mime = {
             ".pdf": "application/pdf",
             ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -107,7 +117,7 @@ def _gemini_extract(path: Path) -> dict[str, Any]:
             ".webp": "image/webp",
         }.get(path.suffix.lower(), "application/octet-stream")
         genai.configure(api_key=key)
-        model = genai.GenerativeModel("gemini-2.0-flash")
+        model = genai.GenerativeModel(GEMINI_MODEL)
         prompt = (
             'Extract only tables as JSON {"headers": [...], "rows": [...]}. '
             "No statistics. No chapter. Preserve the headers, labels, and values exactly."
@@ -127,7 +137,9 @@ def _gemini_extract(path: Path) -> dict[str, Any]:
         raise
     except Exception as exc:
         print(f"Gemini extraction failed: {type(exc).__name__}", flush=True)
-        raise GeminiExtractionError(GEMINI_FALLBACK) from exc
+        if type(exc).__name__ == "NotFound":
+            raise GeminiExtractionError(GEMINI_UNAVAILABLE) from exc
+        raise GeminiExtractionError(GEMINI_FAILED) from exc
 
 
 def _table_as_csv(table: dict[str, Any]) -> str:
