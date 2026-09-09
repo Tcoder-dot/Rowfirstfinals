@@ -1,6 +1,6 @@
-# [Project name]
+# Rowfirst Analytics Bot
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+Telegram-based research analysis bot that runs verified statistical tests, creates charts and result documents, and writes plain-English university-style discussions.
 
 ## Run & Operate
 
@@ -10,10 +10,13 @@ _Replace the heading above with the project's name, and this line with one sente
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
 - Required env: `DATABASE_URL` — Postgres connection string
+- `python3 tests/test_gold.py` — verify the SciPy gold outputs and reporting resilience
+- `python3 bot.py` — start Telegram polling; requires `TELEGRAM_BOT_TOKEN` and `GEMINI_API_KEY` in Secrets
 
 ## Stack
 
 - pnpm workspaces, Node.js 24, TypeScript 5.9
+- Python 3.11, SciPy, statsmodels, pandas, pyTelegramBotAPI, and reportlab
 - API: Express 5
 - DB: PostgreSQL + Drizzle ORM
 - Validation: Zod (`zod/v4`), `drizzle-zod`
@@ -22,15 +25,22 @@ _Replace the heading above with the project's name, and this line with one sente
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `bot.py` — Telegram handlers and document delivery
+- `handle.py` — analysis orchestration, verified result formatting, and Telegram breakdown
+- `stats_engine.py` — deterministic statistical calculations owned by SciPy/statsmodels
+- `chapter4.py` — Markdown, DOCX, and PDF result documents, including Section 7 discussion
+- `ingest.py` — CSV, spreadsheet, text, ZIP, and paired/two-way input handling
+- `tests/test_gold.py` — A–F gold tests and reporting checks
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- Statistical calculations stay deterministic in `stats_engine.py`; narrative code does not recompute results.
+- Section 7 synthesizes all outcomes in plain English instead of repeating Section 6.
+- Design-aware wording is conditional: ANOVA, moisture/drier, pH acidity, and other language only appear when supported by the analyzed columns and test.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+Researchers can send tables and supported files to the Telegram bot, receive verified statistical results, readable breakdowns, charts, and a downloadable Results Document.
 
 ## User preferences
 
@@ -38,7 +48,9 @@ _Populate as you build — explicit user instructions worth remembering across s
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- Only one Telegram polling process may run for the bot token at a time.
+- Never hardcode or print `TELEGRAM_BOT_TOKEN` or `GEMINI_API_KEY`.
+- Do not rewrite SciPy/statistical engine logic while changing reporting language.
 
 ## Pointers
 
