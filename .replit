@@ -46,5 +46,5 @@ packages = ["cairo", "ffmpeg-full", "freetype", "ghostscript", "glibcLocales", "
 [userenv]
 
 [userenv.shared]
-TELEGRAM_BOT_TOKEN = "8906001276:AAGVIcNQ9-ANE9ovncth7dUJlT99MSxaaoc"
+TELEGRAM_BOT_TOKEN = "8906001276:AAFoqAdzzEhk6LkcQ9WizU-I0sMPvVxfqCE"
 GEMINI_API_KEY = "AQ.Ab8RN6J-lX-YO8_kv8HKPIM5ddrJ6l_ouMMNnSwvBtysLbKDmQ"
