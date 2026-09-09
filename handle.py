@@ -818,6 +818,13 @@ def _requested_mode(text: str, request: dict) -> str | None:
     return "regression" if "regression" in lower else None
 
 
+def _requested_outcome(request: dict) -> str | None:
+    requested = request.get("outcome") or request.get("outcome_name")
+    if requested is None:
+        return None
+    return str(requested).strip() or None
+
+
 def _is_unsupported(text: str) -> bool:
     lower = text.lower()
     if any(term in lower for term in ("forecast", "forecasting", "mixed model", "survival analysis", "generalized linear", "glm", "logistic regression", "multiple regression")):
