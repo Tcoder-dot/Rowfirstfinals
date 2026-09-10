@@ -832,7 +832,8 @@ def _fmt_num(value: Any) -> str:
 
 
 def _fmt_sum(value: Any) -> str:
-    return f"{float(value):.2f}" if isinstance(value, (int, float)) else "not reported"
+    # Format numeric totals with comma thousands separators and two decimals
+    return f"{float(value):,.2f}" if isinstance(value, (int, float)) else "not reported"
 
 
 def _fmt_p(value: Any) -> str:
