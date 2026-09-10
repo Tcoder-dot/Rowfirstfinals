@@ -12,8 +12,11 @@ import io
 import os
 import re
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any
+
+from flask import Flask
 
 from chapter4 import write_docx
 from charts import make_charts
@@ -27,6 +30,19 @@ try:
 except ImportError:
     telebot = None
     types = None
+
+
+health_app = Flask(__name__)
+
+
+@health_app.get("/")
+def health_check() -> tuple[str, int]:
+    return "ROWFIRST engine active", 200
+
+
+def _run_health_server() -> None:
+    port = int(os.environ.get("PORT", 8080))
+    health_app.run(host="0.0.0.0", port=port, use_reloader=False)
 
 
 def explain(engine: dict[str, Any]) -> str:
@@ -490,6 +506,11 @@ def main() -> None:
         except Exception as exc:
             _send_error(bot, message, exc, "Could not read the photo")
 
+    threading.Thread(
+        target=_run_health_server,
+        name="rowfirst-health-server",
+        daemon=True,
+    ).start()
     print("polling started once", flush=True)
     bot.infinity_polling(skip_pending=True)
 

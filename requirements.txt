@@ -37,3 +37,4 @@ reportlab
 scipy
 statsmodels
 xlrd
+flask

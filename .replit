@@ -24,12 +24,13 @@ args = "Rowfirst Telegram Bot"
 name = "Rowfirst Telegram Bot"
 author = "agent"
 
+[workflows.workflow.metadata]
+outputType = "webview"
+
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "python3 bot.py"
-
-[workflows.workflow.metadata]
-outputType = "console"
+args = "PORT=8082 python3 bot.py"
+waitForPort = 8082
 
 [agent]
 stack = "PNPM_WORKSPACE"
@@ -42,9 +43,3 @@ timeoutMs = 20000
 [nix]
 channel = "stable-25_05"
 packages = ["cairo", "ffmpeg-full", "freetype", "ghostscript", "glibcLocales", "gobject-introspection", "gtk3", "lcms2", "libimagequant", "libjpeg", "libtiff", "libwebp", "libxcrypt", "openjpeg", "pkg-config", "qhull", "tcl", "tk", "xsimd", "zlib"]
-
-[userenv]
-
-[userenv.shared]
-TELEGRAM_BOT_TOKEN = "8906001276:AAFoqAdzzEhk6LkcQ9WizU-I0sMPvVxfqCE"
-GEMINI_API_KEY = "AQ.Ab8RN6J-lX-YO8_kv8HKPIM5ddrJ6l_ouMMNnSwvBtysLbKDmQ"
