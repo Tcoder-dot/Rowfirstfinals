@@ -353,6 +353,11 @@ def analyze_groups(
     groups = [g for g in groups if g.get("values")]
     if len(groups) < 2:
         raise ValueError("Need at least two groups with numeric values.")
+    # Ensure each incoming group dict includes a numeric totalSum for reporting.
+    # Use Python sum() to avoid changing any SciPy/statistical behavior.
+    for g in groups:
+        values = g.get("values") or []
+        g["totalSum"] = float(sum(values)) if values else 0.0
     if design == "anova" or (design is None and len(groups) >= 3):
         return one_way_anova(groups, outcome)
     if len(groups) == 2:
