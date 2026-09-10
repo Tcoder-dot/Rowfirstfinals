@@ -13,6 +13,7 @@ import os
 import re
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -549,6 +550,10 @@ def main() -> None:
     pending: dict[int, dict[str, str]] = {}
     pending_multivariate: dict[int, dict[str, Any]] = {}
     last_engine: dict[int, dict[str, Any]] = {}
+    text_buffers: dict[int, dict[str, Any]] = {}
+    text_buffer_lock = threading.Lock()
+    text_debounce_seconds = 1.5
+    text_chunk_cooldown_seconds = 2.0
 
     @bot.message_handler(commands=["start", "help"])
     def start(message: Any) -> None:
@@ -641,6 +646,86 @@ def main() -> None:
             return True
         return False
 
+    def _has_header_line(raw_text: str) -> bool:
+        first_line = next((line.strip() for line in raw_text.splitlines() if line.strip()), "")
+        if not first_line:
+            return False
+        try:
+            dialect = csv.Sniffer().sniff(first_line, delimiters=",;\t")
+            cells = next(csv.reader([first_line], dialect))
+        except (csv.Error, StopIteration):
+            return False
+        return len(cells) >= 2 and any(re.search(r"[A-Za-z]", cell or "") for cell in cells)
+
+    def _looks_like_pasted_table(raw_text: str) -> bool:
+        lines = [line for line in raw_text.splitlines() if line.strip()]
+        if len(lines) < 2:
+            return False
+        first_line = lines[0]
+        return any(delimiter in first_line for delimiter in (",", ";", "\t"))
+
+    def _process_pasted_text(message: Any, accumulated_text: str) -> None:
+        chat_id = message.chat.id
+        line_count = len([line for line in accumulated_text.splitlines() if line.strip()])
+        if line_count > 50:
+            bot.reply_to(
+                message,
+                "Tip: For large datasets (100+ rows), uploading as a .csv or .txt file avoids Telegram message splitting.",
+            )
+        if chat_id in pending_multivariate:
+            bot.reply_to(message, "Please finish the current column selection before sending another dataset.")
+            return
+        if _maybe_route_multivariate(message, accumulated_text):
+            return
+        engine = _run_analysis(accumulated_text)
+        if engine.get("ok"):
+            last_engine[chat_id] = engine
+        _send_analysis(bot, message, engine)
+
+    def _flush_text_buffer(chat_id: int) -> None:
+        with text_buffer_lock:
+            state = text_buffers.pop(chat_id, None)
+        if not state:
+            return
+        try:
+            _process_pasted_text(state["message"], state["text"])
+        except Exception as exc:
+            _send_error(bot, state["message"], exc, "Could not analyse that")
+
+    def _queue_pasted_text(message: Any, text: str) -> bool:
+        if not _looks_like_pasted_table(text):
+            return False
+        chat_id = message.chat.id
+        now = time.monotonic()
+        has_header = _has_header_line(text)
+        with text_buffer_lock:
+            previous = text_buffers.get(chat_id)
+            within_cooldown = bool(
+                previous and now - previous["received_at"] <= text_chunk_cooldown_seconds
+            )
+            if previous and within_cooldown:
+                accumulated = previous["text"].rstrip() + "\n" + text.lstrip()
+                timer = previous.get("timer")
+                if timer:
+                    timer.cancel()
+            else:
+                accumulated = text
+            timer = threading.Timer(
+                text_debounce_seconds,
+                _flush_text_buffer,
+                args=(chat_id,),
+            )
+            timer.daemon = True
+            text_buffers[chat_id] = {
+                "text": accumulated,
+                "message": message,
+                "received_at": now,
+                "has_header": bool(previous and within_cooldown and (previous["has_header"] or has_header)),
+                "timer": timer,
+            }
+            timer.start()
+        return True
+
     @bot.callback_query_handler(func=lambda call: (getattr(call, "data", "") or "").startswith(("factor:", "outcome:")))
     def on_multivariate_selection(call: Any) -> None:
         chat_id = call.message.chat.id
@@ -726,6 +811,9 @@ def main() -> None:
             if re.search(r"\b(defense|viva)\b", text, flags=re.I):
                 send_defense(message)
                 return
+            if message.chat.id in pending_multivariate:
+                bot.reply_to(message, "Please finish the current column selection before sending another dataset.")
+                return
             if (
                 text.strip().upper() in {"YES", "YES4"}
                 and message.chat.id in last_engine
@@ -742,9 +830,10 @@ def main() -> None:
                 bot.reply_to(message, "I have the extracted table ready. Reply YES to analyse it.")
                 return
             else:
-                if _maybe_route_multivariate(message, text):
+                if _queue_pasted_text(message, text):
                     return
-                engine = _run_analysis(text)
+                _process_pasted_text(message, text)
+                return
             if engine.get("ok"):
                 last_engine[message.chat.id] = engine
             _send_analysis(bot, message, engine)
