@@ -549,6 +549,7 @@ def main() -> None:
     bot = telebot.TeleBot(token)
     pending: dict[int, dict[str, str]] = {}
     pending_multivariate: dict[int, dict[str, Any]] = {}
+    user_sessions: dict[int, dict[str, Any]] = {}
     last_engine: dict[int, dict[str, Any]] = {}
     text_buffers: dict[int, dict[str, Any]] = {}
     text_buffer_lock = threading.Lock()
@@ -566,11 +567,19 @@ def main() -> None:
         except Exception as exc:
             _send_error(bot, message, exc, "Could not send the welcome message")
 
-    def send_results_document(message: Any) -> None:
+    def _session_actions_markup() -> Any:
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        markup.add(
+            types.InlineKeyboardButton("🔄 Test Another Variable", callback_data="session:rerun"),
+            types.InlineKeyboardButton("📁 Clear & New Dataset", callback_data="session:clear"),
+        )
+        return markup
+
+    def send_results_document(message: Any) -> bool:
         engine = last_engine.get(message.chat.id)
         if not engine or not engine.get("ok"):
             bot.reply_to(message, "Send a table first.")
-            return
+            return False
         try:
             with tempfile.TemporaryDirectory(prefix="rowfirst-results-") as tmp:
                 docx_path = Path(tmp) / "Rowfirst_Results.docx"
@@ -581,8 +590,16 @@ def main() -> None:
                         document_file,
                         caption="Rowfirst_Results.docx — built from the last engine JSON.",
                     )
+            if message.chat.id in user_sessions:
+                bot.reply_to(
+                    message,
+                    "Analysis complete! What would you like to do next?",
+                    reply_markup=_session_actions_markup(),
+                )
+            return True
         except Exception as exc:
             _send_error(bot, message, exc, "Could not build the Results Document")
+            return False
 
     def send_defense(message: Any) -> None:
         engine = last_engine.get(message.chat.id)
@@ -622,7 +639,17 @@ def main() -> None:
         ])
         return markup
 
-    def _prompt_multivariate(message: Any, route: dict[str, Any]) -> None:
+    def _prompt_multivariate(
+        message: Any,
+        route: dict[str, Any],
+        *,
+        cache_session: bool = True,
+    ) -> None:
+        if cache_session:
+            user_sessions[message.chat.id] = {
+                "df": route["frame"],
+                "timestamp": time.time(),
+            }
         pending_multivariate[message.chat.id] = {
             "frame": route["frame"],
             "factors": route["factors"],
@@ -633,6 +660,31 @@ def main() -> None:
             "Step 1/2: Select the Grouping Factor (Independent Variable)",
             reply_markup=_choice_markup("factor", route["factors"]),
         )
+
+    @bot.callback_query_handler(
+        func=lambda call: (getattr(call, "data", "") or "").startswith("session:")
+    )
+    def on_session_selection(call: Any) -> None:
+        chat_id = call.message.chat.id
+        callback_data = call.data or ""
+        bot.answer_callback_query(call.id)
+        if callback_data == "session:rerun":
+            session = user_sessions.get(chat_id)
+            if not session:
+                bot.reply_to(call.message, "Session expired. Please paste or upload your dataset again.")
+                return
+            route = _multivariate_table_route(session.get("df"))
+            if not route or route.get("kind") != "multivariate":
+                bot.reply_to(call.message, "Session expired. Please paste or upload your dataset again.")
+                return
+            _prompt_multivariate(call.message, route, cache_session=False)
+            return
+        if callback_data == "session:clear":
+            user_sessions.pop(chat_id, None)
+            pending_multivariate.pop(chat_id, None)
+            bot.reply_to(call.message, "Session cleared. Ready for your next dataset!")
+            return
+        bot.answer_callback_query(call.id, "Invalid session action.", show_alert=True)
 
     def _maybe_route_multivariate(message: Any, raw_text: str) -> bool:
         route = _multivariate_table_route(_read_delimited_frame(raw_text))

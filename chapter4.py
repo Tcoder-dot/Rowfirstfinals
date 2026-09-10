@@ -29,7 +29,7 @@ def to_markdown(engine: dict[str, Any]) -> str:
     for index, result in enumerate(results, start=1):
         if len(results) > 1:
             lines.extend([f"### {_outcome_name(result)}", ""])
-        lines.extend(_markdown_table(["Treatment", "n", "Mean", "SD"], _descriptive_rows(result)))
+        lines.extend(_markdown_table(["Treatment", "n", "Total Sum", "Mean", "SD"], _descriptive_rows(result)))
         if index < len(results):
             lines.append("")
     lines.extend(["", "## 4 Inferential table", ""])
@@ -82,7 +82,7 @@ def write_docx(engine: dict[str, Any], path: str | Path) -> str:
     for index, result in enumerate(results):
         if len(results) > 1:
             document.add_heading(_outcome_name(result), level=3)
-        _add_docx_table(document, ["Treatment", "n", "Mean", "SD"], _descriptive_rows(result))
+        _add_docx_table(document, ["Treatment", "n", "Total Sum", "Mean", "SD"], _descriptive_rows(result))
         _embed_chart(document, engine, index)
 
     document.add_heading("4 Inferential table", level=2)
@@ -144,7 +144,7 @@ def write_pdf(engine: dict[str, Any], path: str | Path) -> str:
     for result in results:
         if len(results) > 1:
             story.append(Paragraph(_escape(_outcome_name(result)), styles["Heading3"]))
-        story.append(_pdf_table(["Treatment", "n", "Mean", "SD"], _descriptive_rows(result), styles))
+        story.append(_pdf_table(["Treatment", "n", "Total Sum", "Mean", "SD"], _descriptive_rows(result), styles))
     story.append(Spacer(1, 0.1 * inch))
     story.append(Paragraph("4 Inferential table", styles["Heading2"]))
     story.append(_pdf_table(
@@ -344,7 +344,7 @@ def _raw_value(value: Any) -> str:
     return "" if value is None else str(value)
 
 
-def _descriptive_rows(result: dict[str, Any]) -> list[tuple[str, str, str, str]]:
+def _descriptive_rows(result: dict[str, Any]) -> list[tuple[str, str, str, str, str]]:
     test = result.get("test")
     if test in {"student-t", "welch-t"}:
         return [_group_row(result["group1"]), _group_row(result["group2"])]
@@ -353,17 +353,18 @@ def _descriptive_rows(result: dict[str, Any]) -> list[tuple[str, str, str, str]]
     if test == "paired-t":
         return [_group_row(result["before"]), _group_row(result["after"])]
     if test == "two-way anova":
-        return [("Factor combinations", str(result.get("n", "not reported")), "not reported", "not reported")]
+        return [("Factor combinations", str(result.get("n", "not reported")), "not reported", "not reported", "not reported")]
     if test in {"simple linear regression", "pearson", "spearman"}:
         label = f"{result.get('predictor', result.get('xName', 'X'))} / {result.get('outcome', result.get('yName', 'Y'))}"
-        return [(label, str(result.get("n", "not reported")), "not reported", "not reported")]
-    return [("Count table", "not reported", "not applicable", "not applicable")]
+        return [(label, str(result.get("n", "not reported")), "not reported", "not reported", "not reported")]
+    return [("Count table", "not reported", "not applicable", "not applicable", "not applicable")]
 
 
-def _group_row(group: dict[str, Any]) -> tuple[str, str, str, str]:
+def _group_row(group: dict[str, Any]) -> tuple[str, str, str, str, str]:
     return (
         str(group.get("name", "Group")),
         str(group.get("n", "not reported")),
+        _fmt_sum(group.get("totalSum")),
         _fmt_num(group.get("mean")),
         _fmt_num(group.get("sd")),
     )
@@ -828,6 +829,10 @@ def _decision(significant: bool) -> str:
 
 def _fmt_num(value: Any) -> str:
     return f"{float(value):.3f}" if isinstance(value, (int, float)) else "not reported"
+
+
+def _fmt_sum(value: Any) -> str:
+    return f"{float(value):.2f}" if isinstance(value, (int, float)) else "not reported"
 
 
 def _fmt_p(value: Any) -> str:

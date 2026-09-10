@@ -52,7 +52,15 @@ def describe_group(name: str, values: list[float]) -> dict[str, Any]:
     if 3 <= len(x) <= 5000 and np.std(x) > 0:
         W, p = stats.shapiro(x)
         sw = {"W": float(W), "p": float(p), "isNormal": bool(p >= 0.05)}
-    return {"name": name, "n": int(len(x)), "mean": mean, "sd": sd, "median": float(np.median(x)), "shapiroWilk": sw}
+    return {
+        "name": name,
+        "n": int(len(x)),
+        "totalSum": float(np.sum(x)),
+        "mean": mean,
+        "sd": sd,
+        "median": float(np.median(x)),
+        "shapiroWilk": sw,
+    }
 
 
 def independent_ttest(g1: dict, g2: dict, equal_var: bool = True) -> dict[str, Any]:
@@ -238,8 +246,20 @@ def paired_ttest(
     return {
         "test": "paired-t",
         "nPairs": int(len(a)),
-        "before": {"name": "before", "n": int(len(a)), "mean": float(np.mean(a)), "sd": float(np.std(a, ddof=1))},
-        "after": {"name": "after", "n": int(len(b)), "mean": float(np.mean(b)), "sd": float(np.std(b, ddof=1))},
+        "before": {
+            "name": "before",
+            "n": int(len(a)),
+            "totalSum": float(np.sum(a)),
+            "mean": float(np.mean(a)),
+            "sd": float(np.std(a, ddof=1)),
+        },
+        "after": {
+            "name": "after",
+            "n": int(len(b)),
+            "totalSum": float(np.sum(b)),
+            "mean": float(np.mean(b)),
+            "sd": float(np.std(b, ddof=1)),
+        },
         "meanDifference": float(np.mean(differences)),
         "t": float(result.statistic),
         "df": float(len(a) - 1),
