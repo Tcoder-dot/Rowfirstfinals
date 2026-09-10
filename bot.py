@@ -16,12 +16,13 @@ import threading
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 from flask import Flask
 
 from chapter4 import write_docx
 from charts import make_charts
 from handle import analyze_ingested, build_breakdown, handle_analyze
-from ingest import ingest_file
+from ingest import ingest_file, ingest_text
 from qa import quality_check
 
 try:
@@ -45,6 +46,172 @@ def _run_health_server() -> None:
     health_app.run(host="0.0.0.0", port=port, use_reloader=False)
 
 
+_TABLE_FACTOR_NAMES = {
+    "arm",
+    "category",
+    "class",
+    "condition",
+    "group",
+    "method",
+    "school",
+    "sex",
+    "site",
+    "studytime",
+    "treatment",
+    "type",
+    "variant",
+}
+_TABLE_ID_NAMES = {
+    "code",
+    "id",
+    "index",
+    "patient",
+    "patientid",
+    "record",
+    "recordid",
+    "sample",
+    "sampleid",
+    "student",
+    "studentid",
+    "subject",
+    "subjectid",
+    "userid",
+}
+
+
+def _table_column_name(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value).strip().lower())
+
+
+def _read_delimited_frame(raw_text: str) -> pd.DataFrame | None:
+    """Read pasted or uploaded delimited text without changing engine logic."""
+    raw = (raw_text or "").strip()
+    if not raw or "\n" not in raw:
+        return None
+    try:
+        sample = raw[:8192]
+        dialect = csv.Sniffer().sniff(sample, delimiters=",;\t")
+        separator = dialect.delimiter
+    except csv.Error:
+        separator = None
+    try:
+        frame = pd.read_csv(io.StringIO(raw), sep=separator, engine="python")
+    except (pd.errors.ParserError, ValueError):
+        return None
+    frame = frame.dropna(axis=0, how="all").dropna(axis=1, how="all")
+    return frame if frame.shape[1] >= 2 and not frame.empty else None
+
+
+def _numeric_table_columns(frame: pd.DataFrame) -> list[str]:
+    numeric: list[str] = []
+    for column in frame.columns:
+        values = pd.to_numeric(frame[column], errors="coerce")
+        if values.notna().sum() >= max(1, int(len(frame) * 0.8)):
+            numeric.append(column)
+    return numeric
+
+
+def _multivariate_table_route(frame: pd.DataFrame | None) -> dict[str, Any] | None:
+    """Classify a table before it enters the existing ingestion/engine path."""
+    if frame is None or frame.shape[1] < 2:
+        return None
+    numeric_columns = _numeric_table_columns(frame)
+    numeric_set = set(numeric_columns)
+    identifier_columns = [
+        column for column in frame.columns
+        if _table_column_name(column) in _TABLE_ID_NAMES
+    ]
+    factor_columns: list[str] = [
+        column for column in frame.columns
+        if column not in numeric_set and column not in identifier_columns
+    ]
+    for column in numeric_columns:
+        normalized = _table_column_name(column)
+        values = pd.to_numeric(frame[column], errors="coerce").dropna()
+        integer_like = bool(values.size) and bool((values % 1 == 0).all())
+        low_cardinality = values.nunique() >= 2 and values.nunique() <= min(12, max(3, len(frame) // 3))
+        if normalized in _TABLE_FACTOR_NAMES or (integer_like and low_cardinality and normalized.endswith("time")):
+            factor_columns.append(column)
+
+    # A conventional two-column Treatment/Value table already has an
+    # existing ingestion path and should not be diverted to a prompt.
+    normalized_headers = {_table_column_name(column) for column in frame.columns}
+    if (
+        len(frame.columns) == 2
+        and normalized_headers & {"group", "method", "treatment", "condition"}
+        and len(numeric_columns) == 1
+    ):
+        return None
+
+    outcome_columns = [column for column in numeric_columns if column not in factor_columns]
+    if factor_columns and outcome_columns:
+        return {
+            "kind": "multivariate",
+            "frame": frame,
+            "factors": list(dict.fromkeys(factor_columns)),
+            "outcomes": outcome_columns,
+        }
+
+    if len(numeric_columns) >= 2 and not factor_columns:
+        counts = [int(pd.to_numeric(frame[column], errors="coerce").notna().sum()) for column in numeric_columns]
+        if any(count < 2 for count in counts):
+            return {
+                "kind": "invalid",
+                "message": (
+                    "I found numeric groups with only one observation. "
+                    "ANOVA needs at least two observations per group, so I stopped without generating a report."
+                ),
+            }
+        return {"kind": "wide", "frame": frame}
+    return None
+
+
+def _group_size_error(ingested: dict[str, Any]) -> str | None:
+    """Reject n=1 groups before the statistical engine is called."""
+    groups: list[dict[str, Any]] = list(ingested.get("groups") or [])
+    for outcome in ingested.get("outcomes") or []:
+        groups.extend(outcome.get("groups") or [])
+    if groups and any(len(group.get("values") or []) < 2 for group in groups):
+        return (
+            "I found a group with only one observation. "
+            "ANOVA needs at least two observations per group, so I stopped without generating a report."
+        )
+    return None
+
+
+def _analyze_ingested_safely(ingested: dict[str, Any], outcome_name: str | None = None) -> dict[str, Any]:
+    guard_error = _group_size_error(ingested)
+    if guard_error:
+        return {"ok": False, "error": guard_error}
+    return analyze_ingested(ingested, outcome_name=outcome_name)
+
+
+def _multivariate_file_route(path: Path) -> dict[str, Any] | None:
+    if path.suffix.lower() not in {".csv", ".txt", ".tsv"}:
+        return None
+    try:
+        raw = path.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return None
+    return _multivariate_table_route(_read_delimited_frame(raw))
+
+
+def _group_multivariate_frame(
+    frame: pd.DataFrame,
+    factor: str,
+    outcome: str,
+) -> list[dict[str, Any]]:
+    selected = frame[[factor, outcome]].copy()
+    selected[outcome] = pd.to_numeric(selected[outcome], errors="coerce")
+    selected = selected.dropna(subset=[factor, outcome])
+    grouped = selected.groupby(factor, dropna=False)[outcome].apply(list)
+    return [
+        {"name": str(name), "values": [float(value) for value in values]}
+        for name, values in grouped.items()
+        if values
+    ]
+
+
 def explain(engine: dict[str, Any]) -> str:
     """Only display verified engine text; do not ask an LLM to rewrite statistics."""
     if not engine.get("ok"):
@@ -64,7 +231,7 @@ def _table_preview(table: dict[str, Any]) -> str:
 
 def _engine_from_file(path: Path) -> dict[str, Any]:
     ingested = ingest_file(path)
-    engine = analyze_ingested(ingested)
+    engine = _analyze_ingested_safely(ingested)
     engine["ingested"] = ingested
     engine["qa"] = quality_check(ingested)
     engine["breakdown"] = build_breakdown(engine)
@@ -253,6 +420,14 @@ def _analysis_request(text: str) -> tuple[dict[str, Any], dict[str, Any]]:
 
 def _run_analysis(text: str) -> dict[str, Any]:
     request, metadata = _analysis_request(text)
+    try:
+        ingested = ingest_text(request["text"])
+    except (ValueError, TypeError):
+        ingested = None
+    if ingested:
+        guard_error = _group_size_error(ingested)
+        if guard_error:
+            return {"ok": False, "error": guard_error}
     engine = handle_analyze(request)
     if engine.get("ok"):
         if metadata["topic"]:
@@ -365,6 +540,7 @@ def main() -> None:
         return
     bot = telebot.TeleBot(token)
     pending: dict[int, dict[str, str]] = {}
+    pending_multivariate: dict[int, dict[str, Any]] = {}
     last_engine: dict[int, dict[str, Any]] = {}
 
     @bot.message_handler(commands=["start", "help"])
@@ -423,6 +599,95 @@ def main() -> None:
             ),
         )
 
+    def _choice_markup(prefix: str, choices: list[str]) -> Any:
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        markup.add(*[
+            types.InlineKeyboardButton(
+                text=str(choice)[:50],
+                callback_data=f"rowfirst:multivariate:{prefix}:{index}",
+            )
+            for index, choice in enumerate(choices)
+        ])
+        return markup
+
+    def _prompt_multivariate(message: Any, route: dict[str, Any]) -> None:
+        pending_multivariate[message.chat.id] = {
+            "frame": route["frame"],
+            "factors": route["factors"],
+            "outcomes": route["outcomes"],
+        }
+        bot.reply_to(
+            message,
+            "Detected a multivariate dataset. Please select:\n"
+            "1. Grouping Factor (e.g., studytime)\n"
+            "2. Outcome Variable (e.g., G3)",
+            reply_markup=_choice_markup("factor", route["factors"]),
+        )
+
+    def _maybe_route_multivariate(message: Any, raw_text: str) -> bool:
+        route = _multivariate_table_route(_read_delimited_frame(raw_text))
+        if not route:
+            return False
+        if route["kind"] == "invalid":
+            bot.reply_to(message, route["message"])
+            return True
+        if route["kind"] == "multivariate":
+            _prompt_multivariate(message, route)
+            return True
+        return False
+
+    @bot.callback_query_handler(
+        func=lambda call: (getattr(call, "data", "") or "").startswith("rowfirst:multivariate:")
+    )
+    def on_multivariate_selection(call: Any) -> None:
+        chat_id = call.message.chat.id
+        state = pending_multivariate.get(chat_id)
+        if not state:
+            bot.answer_callback_query(call.id, "This dataset selection has expired.", show_alert=True)
+            return
+        bot.answer_callback_query(call.id)
+        parts = (call.data or "").split(":")
+        if len(parts) != 4 or parts[2] not in {"factor", "outcome"}:
+            bot.answer_callback_query(call.id, "Invalid selection.", show_alert=True)
+            return
+        try:
+            index = int(parts[3])
+        except ValueError:
+            bot.answer_callback_query(call.id, "Invalid selection.", show_alert=True)
+            return
+
+        if parts[2] == "factor":
+            factors = state["factors"]
+            if index < 0 or index >= len(factors):
+                bot.answer_callback_query(call.id, "Invalid grouping factor.", show_alert=True)
+                return
+            factor = factors[index]
+            state["factor"] = factor
+            bot.edit_message_text(
+                f"Grouping factor selected: {factor}\nNow select the outcome variable.",
+                chat_id=chat_id,
+                message_id=call.message.message_id,
+                reply_markup=_choice_markup("outcome", state["outcomes"]),
+            )
+            return
+
+        outcomes = state["outcomes"]
+        if index < 0 or index >= len(outcomes) or not state.get("factor"):
+            bot.answer_callback_query(call.id, "Select a grouping factor first.", show_alert=True)
+            return
+        outcome = outcomes[index]
+        factor = state["factor"]
+        pending_multivariate.pop(chat_id, None)
+        groups = _group_multivariate_frame(state["frame"], factor, outcome)
+        ingested = {"format": "labelled", "groups": groups}
+        engine = _analyze_ingested_safely(ingested, outcome_name=str(outcome))
+        engine["ingested"] = ingested
+        engine["qa"] = quality_check(ingested)
+        engine["breakdown"] = build_breakdown(engine)
+        if engine.get("ok"):
+            last_engine[chat_id] = engine
+        _send_analysis(bot, call.message, engine)
+
     @bot.message_handler(content_types=["text"])
     def on_text(message: Any) -> None:
         try:
@@ -444,11 +709,15 @@ def main() -> None:
                 return
             if text.strip().upper() == "YES" and message.chat.id in pending:
                 analysis_text = pending.pop(message.chat.id)["text"]
+                if _maybe_route_multivariate(message, analysis_text):
+                    return
                 engine = _run_analysis(analysis_text)
             elif message.chat.id in pending:
                 bot.reply_to(message, "I have the extracted table ready. Reply YES to analyse it.")
                 return
             else:
+                if _maybe_route_multivariate(message, text):
+                    return
                 engine = _run_analysis(text)
             if engine.get("ok"):
                 last_engine[message.chat.id] = engine
@@ -474,6 +743,13 @@ def main() -> None:
                 info = bot.get_file(document.file_id)
                 path.write_bytes(bot.download_file(info.file_path))
                 if suffix in LOCAL_SUFFIXES:
+                    route = _multivariate_file_route(path)
+                    if route and route["kind"] == "invalid":
+                        bot.reply_to(message, route["message"])
+                        return
+                    if route and route["kind"] == "multivariate":
+                        _prompt_multivariate(message, route)
+                        return
                     engine = _engine_from_file(path)
                     if engine.get("ok"):
                         last_engine[message.chat.id] = engine
