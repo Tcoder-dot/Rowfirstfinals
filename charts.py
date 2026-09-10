@@ -133,7 +133,9 @@ def _render_chart(
 
 
 def _bar_figure(groups: list[dict[str, Any]], title: str) -> Any:
-    fig, ax = plt.subplots(figsize=(7, 4.5))
+    group_count = len(groups)
+    width = max(8.0, group_count * 0.45) if group_count > 6 else 7.0
+    fig, ax = plt.subplots(figsize=(width, 4.5))
     ax.bar(
         [str(group["name"]) for group in groups],
         [float(group["mean"]) for group in groups],
@@ -144,6 +146,10 @@ def _bar_figure(groups: list[dict[str, Any]], title: str) -> Any:
     )
     ax.set_ylabel("Mean")
     ax.set_title(title)
+    if group_count > 6:
+        ax.tick_params(axis="x", labelrotation=45)
+        for label in ax.get_xticklabels():
+            label.set_ha("right")
     return fig
 
 

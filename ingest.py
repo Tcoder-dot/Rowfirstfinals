@@ -25,7 +25,18 @@ FACTOR_HINTS = GROUP_HEADERS | TIME_HEADERS | {"day", "plant", "block", "batch",
 def parse_numbers(cell: str) -> list[float]:
     if cell is None:
         return []
-    return [float(x) for x in NUMBER_RE.findall(str(cell).replace(",", " "))]
+    text = str(cell).strip()
+    if not text:
+        return []
+    normalized = text.replace(",", " ")
+    matches = NUMBER_RE.findall(normalized)
+    if not matches:
+        return []
+    remainder = NUMBER_RE.sub("", normalized)
+    remainder = re.sub(r"[\s;|:/()[\]{}%±]+", "", remainder)
+    if remainder:
+        return []
+    return [float(x) for x in matches]
 
 
 def _norm(h: str) -> str:
@@ -60,7 +71,7 @@ def ingest_text(text: str) -> dict:
     if len(groups) >= 2:
         return {"format": "labelled", "groups": groups}
 
-    raise ValueError("Could not find two groups of numbers. Use 'Brining: 1, 2, 3' or a table with a Treatment column.")
+    raise ValueError("Could not find at least two numeric groups. Use 'Brining: 1, 2, 3' or a table with a Treatment column.")
 
 
 def ingest_file(path: str | os.PathLike[str]) -> dict:
@@ -117,7 +128,7 @@ def _maybe_count_matrix(text: str) -> list[list[int]] | None:
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     grid = []
     for ln in lines:
-        nums = [int(float(x)) for x in NUMBER_RE.findall(ln)]
+        nums = [int(float(x)) for x in parse_numbers(ln)]
         if len(nums) >= 2:
             grid.append(nums)
     if len(grid) >= 2 and len({len(r) for r in grid}) == 1:
@@ -311,12 +322,7 @@ def ingest_table(rows: list[list[str]], headers: list[str] | None) -> dict:
         if len(groups) >= 2:
             return {"format": "wide", "groups": groups}
 
-    if len(num_idx) == 2 and not factor_indices:
-        groups = []
-        for j in num_idx:
-            groups.append({"name": headers[j], "values": [parse_numbers(r[j])[0] for r in rows if j < len(r) and parse_numbers(r[j])]})
-        return {"format": "wide", "groups": groups}
-    raise ValueError("Table found but no usable factor or two numeric columns.")
+    raise ValueError("Table found but no usable numeric groups.")
 
 
 def _has_two_levels(rows: list[list[str]], index: int) -> bool:
