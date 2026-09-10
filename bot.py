@@ -333,7 +333,13 @@ def _table_as_csv(table: dict[str, Any]) -> str:
     return output.getvalue()
 
 
-def _send_analysis(bot: Any, message: Any, engine: dict[str, Any]) -> None:
+def _send_analysis(
+    bot: Any,
+    message: Any,
+    engine: dict[str, Any],
+    *,
+    ask_for_document: bool = True,
+) -> None:
     if not engine.get("ok"):
         bot.reply_to(message, engine.get("question") or engine.get("error", "I could not analyse that.")[:4000])
         return
@@ -365,7 +371,8 @@ def _send_analysis(bot: Any, message: Any, engine: dict[str, Any]) -> None:
                 bot.send_photo(message.chat.id, image_file, caption=chart.get("caption", ""))
         except Exception as exc:
             print(f"Chart delivery skipped: {type(exc).__name__}", flush=True)
-    bot.reply_to(message, "Want a Results Document (Word)? Reply YES")
+    if ask_for_document:
+        bot.reply_to(message, "Want a Results Document (Word)? Reply YES")
 
 
 def _reply_block(bot: Any, message: Any, text: str) -> None:
@@ -604,9 +611,9 @@ def main() -> None:
         markup.add(*[
             types.InlineKeyboardButton(
                 text=str(choice)[:50],
-                callback_data=f"rowfirst:multivariate:{prefix}:{index}",
+                callback_data=f"{prefix}:{choice}",
             )
-            for index, choice in enumerate(choices)
+            for choice in choices
         ])
         return markup
 
@@ -618,9 +625,7 @@ def main() -> None:
         }
         bot.reply_to(
             message,
-            "Detected a multivariate dataset. Please select:\n"
-            "1. Grouping Factor (e.g., studytime)\n"
-            "2. Outcome Variable (e.g., G3)",
+            "Step 1/2: Select the Grouping Factor (Independent Variable)",
             reply_markup=_choice_markup("factor", route["factors"]),
         )
 
@@ -636,9 +641,7 @@ def main() -> None:
             return True
         return False
 
-    @bot.callback_query_handler(
-        func=lambda call: (getattr(call, "data", "") or "").startswith("rowfirst:multivariate:")
-    )
+    @bot.callback_query_handler(func=lambda call: (getattr(call, "data", "") or "").startswith(("factor:", "outcome:")))
     def on_multivariate_selection(call: Any) -> None:
         chat_id = call.message.chat.id
         state = pending_multivariate.get(chat_id)
@@ -646,25 +649,23 @@ def main() -> None:
             bot.answer_callback_query(call.id, "This dataset selection has expired.", show_alert=True)
             return
         bot.answer_callback_query(call.id)
-        parts = (call.data or "").split(":")
-        if len(parts) != 4 or parts[2] not in {"factor", "outcome"}:
+        callback_data = call.data or ""
+        if ":" not in callback_data:
             bot.answer_callback_query(call.id, "Invalid selection.", show_alert=True)
             return
-        try:
-            index = int(parts[3])
-        except ValueError:
+        selection_type, selected_column = callback_data.split(":", 1)
+        if selection_type not in {"factor", "outcome"} or not selected_column:
             bot.answer_callback_query(call.id, "Invalid selection.", show_alert=True)
             return
 
-        if parts[2] == "factor":
+        if selection_type == "factor":
             factors = state["factors"]
-            if index < 0 or index >= len(factors):
+            if selected_column not in factors:
                 bot.answer_callback_query(call.id, "Invalid grouping factor.", show_alert=True)
                 return
-            factor = factors[index]
-            state["factor"] = factor
+            state["chosen_factor"] = selected_column
             bot.edit_message_text(
-                f"Grouping factor selected: {factor}\nNow select the outcome variable.",
+                "Step 2/2: Select the Outcome Variable to measure (Dependent Variable)",
                 chat_id=chat_id,
                 message_id=call.message.message_id,
                 reply_markup=_choice_markup("outcome", state["outcomes"]),
@@ -672,21 +673,46 @@ def main() -> None:
             return
 
         outcomes = state["outcomes"]
-        if index < 0 or index >= len(outcomes) or not state.get("factor"):
+        chosen_factor = state.get("chosen_factor")
+        if selected_column not in outcomes or not chosen_factor:
             bot.answer_callback_query(call.id, "Select a grouping factor first.", show_alert=True)
             return
-        outcome = outcomes[index]
-        factor = state["factor"]
+        state["chosen_outcome"] = selected_column
+        chosen_outcome = state["chosen_outcome"]
         pending_multivariate.pop(chat_id, None)
-        groups = _group_multivariate_frame(state["frame"], factor, outcome)
-        ingested = {"format": "labelled", "groups": groups}
-        engine = _analyze_ingested_safely(ingested, outcome_name=str(outcome))
+        frame = state["frame"]
+        groups = [
+            group.dropna().values
+            for _, group in frame.groupby(chosen_factor)[chosen_outcome]
+        ]
+        if any(len(group) < 2 for group in groups):
+            bot.reply_to(
+                call.message,
+                "I found a group with only one observation. "
+                "ANOVA needs at least two observations per group, so I stopped without generating a report.",
+            )
+            return
+        grouped = frame.groupby(chosen_factor)[chosen_outcome]
+        ingested = {
+            "format": "labelled",
+            "groups": [
+                {
+                    "name": str(group_name),
+                    "values": [float(value) for value in group.dropna().values],
+                }
+                for group_name, group in grouped
+            ],
+        }
+        engine = _analyze_ingested_safely(ingested, outcome_name=str(chosen_outcome))
         engine["ingested"] = ingested
         engine["qa"] = quality_check(ingested)
         engine["breakdown"] = build_breakdown(engine)
         if engine.get("ok"):
             last_engine[chat_id] = engine
-        _send_analysis(bot, call.message, engine)
+            _send_analysis(bot, call.message, engine, ask_for_document=False)
+            send_results_document(call.message)
+        else:
+            _send_analysis(bot, call.message, engine)
 
     @bot.message_handler(content_types=["text"])
     def on_text(message: Any) -> None:
